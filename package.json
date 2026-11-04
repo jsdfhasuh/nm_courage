@@ -1,0 +1,9 @@
+{
+  "name": "workday-encouragement",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "本地工资估算与小驴动画，纯静态网页，无后端。",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test time.test.mjs motion.test.mjs scene.test.mjs" }
+}
