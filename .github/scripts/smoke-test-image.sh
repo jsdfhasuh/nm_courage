@@ -26,7 +26,7 @@ container=$(docker run -d -p 127.0.0.1::8080 "$image")
 address=$(docker port "$container" 8080/tcp)
 base="http://${address}"
 
-curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 \
+curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 \
   --connect-timeout 2 --max-time 5 --dump-header "$tmpdir/headers" \
   --output "$tmpdir/index.html" "${base}/"
 grep -q '牛马鼓励器' "$tmpdir/index.html"

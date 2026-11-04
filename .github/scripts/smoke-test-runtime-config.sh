@@ -18,7 +18,7 @@ start() {
   containers+=("$container")
   address=$(docker port "$container" 8080/tcp)
   base="http://${address}"
-  curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 \
+  curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 \
     --connect-timeout 2 --max-time 5 --dump-header "$tmpdir/headers" \
     --output "$tmpdir/config.json" "${base}/runtime-config.json"
   grep -Eiq '^content-type: application/json' "$tmpdir/headers"
