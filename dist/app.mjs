@@ -1,24 +1,16 @@
-import { DEFAULTS, validateSettings, calculate } from './time.mjs';
+import { validateSettings, calculate } from './time.mjs';
+import {SETTINGS_STORE,GOAL_STORE,loadRuntimeConfig,readPreferences,applyStorageChange,resetPreferences} from './runtime-config.mjs';
 import {mountDonkeyScene} from './scene-player.mjs';
 import {normalizeMotionChoice,motionState,toggleMotion} from './motion.mjs';
 const $ = id => document.getElementById(id);
-const STORE = 'carrot-workday-settings-v1';
+const STORE = SETTINGS_STORE;
 const MOTION_STORE = 'carrot-workday-motion-v1';
-let settings = {...DEFAULTS,workdays:[...DEFAULTS.workdays]};
-let hasSettings = false;
-let goal={name:'一杯好喝的奶茶',price:25};
-let focusMode=false;
-let motionChoice='auto';
+const siteDefaults=await loadRuntimeConfig();
+// Accessing window.localStorage itself can throw when browser storage is blocked.
+let storage;
+try{storage=window.localStorage;}catch{}
+let {settings,hasSettings,goal,focusMode,motionChoice,storageAvailable}=readPreferences(storage,siteDefaults);
 const reduced=matchMedia('(prefers-reduced-motion: reduce)');
-let storageAvailable = true;
-try {
- const saved = localStorage.getItem(STORE);
- if (saved) { const result=validateSettings(JSON.parse(saved)); if(result.ok){settings=result.settings;hasSettings=true;} }
- motionChoice=normalizeMotionChoice(localStorage.getItem(MOTION_STORE));
- focusMode=localStorage.getItem('carrot-workday-focus-v1')==='true';
- const g=JSON.parse(localStorage.getItem('carrot-workday-goal-v1')||'null');
- if(g && typeof g.name==='string' && g.name.trim() && Number.isFinite(g.price) && g.price>0 && g.price<=1e9)goal={name:g.name.slice(0,24),price:g.price};
-} catch {storageAvailable=false;}
 const money = n => n.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const bigMoney = n => n >= 100000000 ? money(n/100000000)+'亿' : n >= 100000 ? money(n/10000)+'万' : money(n);
 const dateKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -47,7 +39,7 @@ function render() {
  $('dayRate').textContent='¥'+bigMoney(c.state==='off'?0:c.dayRate);
  $('hourlyRate').textContent='¥'+bigMoney(c.hourlyRate);
  $('incomeMessage').textContent=copy[3];
- $('sampleNote').textContent=hasSettings?'按你的本地设置估算，不代表实际到账。':'正在使用示例薪资，不是你的真实收入。';
+ $('sampleNote').textContent=hasSettings?'按你的本地设置估算，不代表实际到账。':siteDefaults.hasSiteSettings?'正在使用站点默认薪资与班表，不代表你的真实收入。':'正在使用示例薪资，不是你的真实收入。';
  const percent=c.percent.toFixed(1);
  $('progressPercent').innerHTML=percent+'<span>%</span>';
  $('progressFill').style.width=percent+'%';
@@ -103,8 +95,8 @@ form.addEventListener('submit',e=>{
  if(!gn || !Number.isFinite(gp) || gp<=0 || gp>1e9){$('formError').textContent='请填写目标名称，以及大于 0 且不超过 10 亿的目标金额。';$('formError').hidden=false;return;}
  if(!result.ok){$('formError').textContent=result.errors.join(' ');$('formError').hidden=false;return;}
  settings=result.settings;hasSettings=true;goal={name:gn.slice(0,24),price:gp};motionChoice=normalizeMotionChoice(form.elements.motionChoice.value);setMotion();
- try{localStorage.setItem(STORE,JSON.stringify(settings));localStorage.setItem('carrot-workday-goal-v1',JSON.stringify(goal));localStorage.setItem(MOTION_STORE,motionChoice);storageAvailable=true;}catch{storageAvailable=false;}
- $('settingsDialog').close();render();toast(storageAvailable?'已保存。你的专属搬砖小队，出发！':'设置已应用，但浏览器未允许保存；刷新后会恢复示例。');
+ try{localStorage.setItem(STORE,JSON.stringify(settings));localStorage.setItem(GOAL_STORE,JSON.stringify(goal));localStorage.setItem(MOTION_STORE,motionChoice);storageAvailable=true;}catch{storageAvailable=false;}
+ $('settingsDialog').close();render();toast(storageAvailable?'已保存。你的专属搬砖小队，出发！':'设置已应用，但浏览器未允许保存；刷新后可能恢复站点默认值。');
 });
 function updateSceneDescription(state=lastState) {
  const m=motionState(motionChoice,reduced.matches);
@@ -130,6 +122,20 @@ $('motionButton').addEventListener('click',()=>{
 function setFocus(){ $('timerDigits').hidden=focusMode;$('focusMessage').hidden=!focusMode;$('focusButton').textContent=focusMode?'显示倒计时 · 看看进度':'隐藏倒计时 · 专注一会儿';$('focusButton').setAttribute('aria-pressed',String(focusMode));$('timerLabel').textContent=focusMode?'专注模式':stateCopy[lastState||'before'][1]; }
  $('focusButton').addEventListener('click',()=>{focusMode=!focusMode;setFocus();try{localStorage.setItem('carrot-workday-focus-v1',String(focusMode));}catch{}});
 reduced.addEventListener?.('change',setMotion);
-window.addEventListener('storage',e=>{if(e.key===MOTION_STORE){motionChoice=normalizeMotionChoice(e.newValue);setMotion();}if(e.key===STORE){try{const valid=validateSettings(JSON.parse(e.newValue));if(valid.ok){settings=valid.settings;hasSettings=true;}else{settings={...DEFAULTS,workdays:[...DEFAULTS.workdays]};hasSettings=false;}render();}catch{}}});
+$('resetDefaults').addEventListener('click',()=>{
+ const reset=resetPreferences(storage,siteDefaults,()=>window.confirm('恢复站点默认值？这会删除此浏览器保存的薪资、班表和奖励目标；动画与专注偏好保持不变。'));
+ if(!reset)return;
+ ({settings,hasSettings,goal,storageAvailable}=reset);
+ populateSettings();render();
+ toast(storageAvailable?'已恢复站点默认值。动画与专注偏好保持不变。':'已恢复当前页面的默认值，但浏览器未允许删除保存的数据。');
+});
+window.addEventListener('storage',e=>{
+ if(e.storageArea && e.storageArea!==storage)return;
+ if(e.key===MOTION_STORE){motionChoice=normalizeMotionChoice(e.newValue);setMotion();}
+ const current={settings,hasSettings,goal};
+ const next=applyStorageChange(current,e,siteDefaults);
+ if(next!==current){({settings,hasSettings,goal}=next);render();}
+});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)render();});
 setMotion();render();setFocus();mountDonkeyScene($('donkeyCanvas'));setInterval(render,1000);
+

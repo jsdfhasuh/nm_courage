@@ -2,5 +2,18 @@ services:
   web:
     build: .
     restart: unless-stopped
+    environment:
+      # Empty/unset values use the built-in demo defaults. These are public webpage defaults, not secrets.
+      NM_SALARY_TYPE: "${NM_SALARY_TYPE:-}"
+      NM_SALARY: "${NM_SALARY:-}"
+      NM_WORK_START: "${NM_WORK_START:-}"
+      NM_WORK_END: "${NM_WORK_END:-}"
+      NM_BREAK_ENABLED: "${NM_BREAK_ENABLED:-}"
+      NM_BREAK_START: "${NM_BREAK_START:-}"
+      NM_BREAK_END: "${NM_BREAK_END:-}"
+      NM_WORKDAYS: "${NM_WORKDAYS:-}"
+      NM_GOAL_NAME: "${NM_GOAL_NAME:-}"
+      NM_GOAL_PRICE: "${NM_GOAL_PRICE:-}"
     ports:
       - "127.0.0.1:8080:8080"
+

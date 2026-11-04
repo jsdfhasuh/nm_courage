@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/docker-build.yml'
-      - '.github/scripts/smoke-test-image.sh'
+      - '.github/scripts/**'
       - 'Dockerfile'
       - '.dockerignore'
       - 'deploy/**'
@@ -18,7 +18,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/docker-build.yml'
-      - '.github/scripts/smoke-test-image.sh'
+      - '.github/scripts/**'
       - 'Dockerfile'
       - '.dockerignore'
       - 'deploy/**'
@@ -113,6 +113,10 @@ jobs:
         env:
           IMAGE: ${{ steps.meta.outputs.tag }}
         run: bash .github/scripts/smoke-test-image.sh "$IMAGE" "$ARCH"
+      - name: Test runtime configuration and restricted containers
+        env:
+          IMAGE: ${{ steps.meta.outputs.tag }}
+        run: bash .github/scripts/smoke-test-runtime-config.sh "$IMAGE"
       - name: Export tested image and checksum
         env:
           IMAGE: ${{ steps.meta.outputs.tag }}
@@ -321,3 +325,4 @@ jobs:
             echo "- Verified both architectures in the public latest manifest."
             echo "- Pulled and ran \`${REGISTRY_IMAGE}@${PUBLISHED_DIGEST}\` without registry credentials."
           } >> "$GITHUB_STEP_SUMMARY"
+

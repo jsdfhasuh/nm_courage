@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test time.test.mjs motion.test.mjs scene.test.mjs pointer.test.mjs chase.test.mjs"
+    "test": "node --test time.test.mjs motion.test.mjs scene.test.mjs pointer.test.mjs chase.test.mjs runtime-config.test.mjs runtime-env.test.mjs"
   }
 }
+

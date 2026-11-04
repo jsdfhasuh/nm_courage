@@ -33,7 +33,7 @@ grep -q '牛马鼓励器' "$tmpdir/index.html"
 grep -Eiq '^content-type: text/html' "$tmpdir/headers"
 grep -Eiq '^x-content-type-options: nosniff' "$tmpdir/headers"
 
-for module in app chase donkey-scene motion scene-player time; do
+for module in app chase donkey-scene motion scene-player time runtime-config; do
   curl --fail --silent --show-error --max-time 5 --dump-header "$tmpdir/headers" \
     --output "$tmpdir/${module}.mjs" "${base}/${module}.mjs"
   grep -Eiq '^content-type: application/javascript' "$tmpdir/headers"
@@ -41,6 +41,11 @@ for module in app chase donkey-scene motion scene-player time; do
 done
 curl --fail --silent --show-error --max-time 5 --output /dev/null "${base}/style.css"
 curl --fail --silent --show-error --max-time 5 --output /dev/null "${base}/carrot.svg"
+curl --fail --silent --show-error --max-time 5 --dump-header "$tmpdir/headers" \
+  --output "$tmpdir/runtime-config.json" "${base}/runtime-config.json"
+grep -Eiq '^content-type: application/json' "$tmpdir/headers"
+grep -Eiq '^cache-control: no-store' "$tmpdir/headers"
+jq -e 'type == "object"' "$tmpdir/runtime-config.json"
 test "$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' "${base}/missing-module.mjs")" = '404'
 
 for attempt in {1..45}; do
@@ -57,3 +62,4 @@ for attempt in {1..45}; do
 done
 echo 'Timed out waiting for container healthcheck.' >&2
 exit 1
+

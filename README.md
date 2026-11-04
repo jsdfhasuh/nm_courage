@@ -6,7 +6,7 @@
 
 - 无后端、数据库、API 密钥或构建步骤。发布 `dist/` 全部文件即可。
 - 网页通过 HTTP/HTTPS 访问，不要直接双击 `index.html`，浏览器会限制本地 ES 模块。
-- 只有运行测试需要 Node.js 20 或更新版本，不需要 `npm install`。
+- 运行测试需要 Node.js 20 或更新版本及 `jq`（用于容器配置生成器回归），不需要 `npm install`。网页访问本身不需要这些工具。
 
 ## Docker
 
@@ -22,6 +22,54 @@ curl -I http://127.0.0.1:8080/
 
 后续自行部署到 Oracle 云时，只需普通 Linux 主机及 Docker，或已有 Nginx。域名、HTTPS、访问控制、OCI 安全列表及主机防火墙由部署者按需配置，本项目不会修改它们。新自部署站点不会继承原托管站点的私有访问控制，需要私有访问时应自行加认证。
 
+### 容器环境变量默认值
+
+容器每次启动时生成 `runtime-config.json`，只包含下面白名单变量的有效值。镜像不用重新构建；改变变量后重新创建容器，再刷新页面即可。优先级是 **浏览器已保存的有效设置 > 容器默认值 > 程序内置演示值**。容器变量不会反复覆盖用户在网页上保存的设置。
+
+支持的变量（空值或未设置时使用内置默认）：
+
+| 变量 | 内置默认 | 格式 |
+| --- | --- | --- |
+| `NM_SALARY_TYPE` | `monthly` | `monthly` 月薪或 `daily` 日薪 |
+| `NM_SALARY` | `12000` | 大于 0、不超过 10 亿的十进制金额 |
+| `NM_WORK_START` | `09:00` | `HH:mm` |
+| `NM_WORK_END` | `18:00` | `HH:mm`，可早于上班时间表示跨午夜 |
+| `NM_BREAK_ENABLED` | `true` | `true` / `false` |
+| `NM_BREAK_START` | `12:00` | `HH:mm` |
+| `NM_BREAK_END` | `13:30` | `HH:mm` |
+| `NM_WORKDAYS` | `1,2,3,4,5` | 逗号分隔的 `0`–`6`，`0` 表示周日 |
+| `NM_GOAL_NAME` | `一杯好喝的奶茶` | 非空名称，最多 24 个字符 |
+| `NM_GOAL_PRICE` | `25` | 大于 0、不超过 10 亿的十进制金额 |
+
+示例值仅用于演示，不代表个人真实工资：
+
+```sh
+docker run -d --name nm-courage --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -e NM_SALARY=15000 \
+  -e NM_WORK_START=09:30 -e NM_WORK_END=18:30 \
+  -e NM_BREAK_START=12:00 -e NM_BREAK_END=13:00 \
+  -e NM_WORKDAYS=1,2,3,4,5 \
+  -e NM_GOAL_NAME='一杯咖啡' -e NM_GOAL_PRICE=30 \
+  ghcr.io/jsdfhasuh/nm_courage:latest
+```
+
+项目 `compose.yaml` 已映射这些变量，可通过宿主机环境或自行创建且不提交的 `.env` 提供。更新后执行 `docker compose up -d --force-recreate`，只执行 `docker compose restart` 不会重新读取已修改的 Compose 环境变量。已有容器名称冲突时，请自行安排停止和替换。
+
+上下班不能相同；启用午休时，休息必须完整位于班次内且不能覆盖整个班次。例如夜班 `22:00`–`06:00` 需要同时把休息改为 `01:00`–`01:30`，或设置 `NM_BREAK_ENABLED=false`。非法环境变量会让容器明确报错并停止启动，不会静默采用错误工资；错误日志只列变量名，不打印其值。非 Docker 静态部署仍直接使用 `dist/`：其配置文件默认为 `{}`，配置缺失、格式错误或读取超时也不会阻止网页启动，会回退内置默认值。
+
+已有浏览器设置不会随变量变化而被清空。可在“我的设置”中点击 **恢复站点默认值** 并确认，只移除本应用保存的薪资、班表和奖励目标，动画与专注偏好及同域其他数据不受影响。浏览器拒绝存储操作时，界面会说明只能在当前页面应用。
+
+**隐私：这些默认值会发送给所有能访问网页的人。不要放密码、Token 或其他秘密；网页公开时也不建议把真实工资设为站点默认。** 生成器不会导出其他环境变量。用户后来在网页里填写的个人设置仍只保存在该浏览器，不会上传到服务器，也不会进入公开镜像。当前时间仍采用访问者浏览器时区，容器的 `TZ` 不会改变网页计时。
+
+配置以 JSON 编码并通过 `Cache-Control: no-store` 提供，不把变量拼接成可执行脚本。它写入 `/tmp/nm-courage/`，不改镜像静态目录。支持非 root UID 和只读根文件系统，但必须保留可写 `/tmp`，例如额外添加：
+
+```sh
+--user 10001:10001 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=1777
+```
+
+同一容器重启会重新生成配置；更改 UID、环境变量或 tmpfs 配置时应重新创建容器。此功能只更新本仓库的自部署网页与镜像，不会同步更新其他已托管站点。
+
 ### GitHub Actions 定时构建镜像
 
 工作流：[`Build Docker images`](https://github.com/jsdfhasuh/nm_courage/actions/workflows/docker-build.yml)。配置文件为 `.github/workflows/docker-build.yml`，由 dot 编写和推送。
@@ -30,7 +78,7 @@ curl -I http://127.0.0.1:8080/
 - 也可在仓库 **Actions → Build Docker images → Run workflow** 手动构建。Dockerfile、部署配置或工作流变更推到 `main` 时会立即构建验证；相关 Docker、网页、测试或工作流文件的 PR 也会执行验证，普通无关提交不会触发。
 - 先跑完整 Node.js 测试及上海、纽约时区测试，再用原有 Dockerfile 分别构建 **linux/amd64** 和 **linux/arm64**。普通 Intel/AMD 服务器选 amd64，Oracle Ampere A1 等 ARM 服务器选 arm64。
 - 每个架构使用原生 GitHub runner，构建时拉取 `nginx:1.28-alpine` 的当前基础镜像，并按架构缓存构建层。镜像含源码 commit、版本和构建时间标签。同一源码重新构建可能包含更新后的基础镜像。
-- 每个镜像都会实际启动，检查 Nginx 配置、首页、JavaScript MIME、静态资源、缺失文件 404 和容器健康检查。只有通过检查才上传镜像产物。
+- 每个镜像都会实际启动，检查 Nginx 配置、首页、JavaScript MIME、静态资源、缺失文件 404 和容器健康检查；并验证变量覆盖、安全 JSON、非法变量拒绝、同镜像更换变量，以及非 root UID + 只读根 + tmpfs 的运行。只有通过检查才上传镜像产物。
 - 不需要自建密钥。构建、PR 和匿名验证 job 仅申请 `contents: read`；只有受信任 `main` 的独立发布 job 增加 `packages: write`，使用本次运行的临时 `GITHUB_TOKEN` 发布到 GHCR。外部 Actions 固定到完整 commit SHA，不自动更新服务器。
 
 **从公开 GHCR 拉取镜像**
@@ -99,8 +147,8 @@ location /workday/ { try_files $uri $uri/ =404; }
 
 ## 数据与估算
 
-- 工资、班表、奖励及动画偏好只保存在当前浏览器的 localStorage。无上传接口、统计脚本、第三方资源或工资传输请求。
-- 仓库只含虚构演示值和测试数据，不含浏览器保存的个人设置。首次演示月薪 12000 元，不是用户真实工资。
+- 用户在网页里填写和保存的工资、班表、奖励及动画偏好只保存在当前浏览器的 localStorage。无个人设置上传接口、统计脚本或第三方资源；部署者配置的容器默认值会从服务器发送给访问者，应按公开配置对待。
+- 仓库只含虚构演示值和测试数据，不含浏览器保存的个人设置。未配置容器默认值时，内置演示月薪为 12000 元，不是用户真实工资。
 - 同一 origin 下不同路径共享 localStorage；如需相互隔离的多个实例，请使用不同子域名。换域名、浏览器或清除站点数据后需重新设置。
 - 金额均为估算，不代表考勤、实际到账、存款或税后工资。未处理法定节假日、调休、请假、税费与奖金。
 - 默认尊重系统“减少动态效果”，用户可手动播放或暂停，仅影响此网页。暂停动画不影响计时和收入估算。
@@ -113,14 +161,18 @@ TZ=Asia/Shanghai node --test time.test.mjs
 TZ=America/New_York node --test time.test.mjs
 ```
 
-30项测试覆盖跨午夜和跨月班次、休息时间、无效输入、动画偏好、鼠标交互条件、巡回/追逐连续性、急反向、多帧率、固定腿长与完整蹄底接地锁定。源码已做真实浏览器整轮连续动画与窄屏检查。Docker 工作流会对每个架构执行 `.github/scripts/smoke-test-image.sh`，以对应 Actions 运行结果为准；部署时仍应检查实际主机的端口、反向代理及 HTTPS 配置。
+测试覆盖跨午夜和跨月班次、休息时间、无效输入、动画偏好、鼠标交互条件、巡回/追逐连续性、急反向、多帧率、固定腿长与完整蹄底接地锁定；新增运行时配置的校验、安全编码、白名单、默认值优先级、存储兼容及确认重置回归。Docker 工作流会对每个架构执行两个 smoke-test 脚本，以对应 Actions 运行结果为准；部署时仍应检查实际主机的端口、反向代理及 HTTPS 配置。
 
 ## 文件
 
 - `dist/`：可直接发布的完整网页源码。
-- `*.test.mjs`：无外部依赖的测试。
+- `*.test.mjs`：无 npm 依赖的测试，环境变量生成器测试另需 `jq`。
 - `deploy/nginx.conf`、`Dockerfile`、`compose.yaml`：可选部署配置。
 - `.github/workflows/docker-build.yml`：定时、手动及 PR 镜像构建。
 - `.github/scripts/smoke-test-image.sh`：容器 HTTP 与健康检查。
+- `.github/scripts/smoke-test-runtime-config.sh`：容器变量与只读/非 root 运行检查。
+- `deploy/40-runtime-config.sh`、`deploy/runtime-config.jq`：启动时白名单配置生成器。
+- `dist/runtime-config.mjs`、`dist/runtime-config.json`：网页默认值读取、校验与静态部署回退。
 
 自部署版本由 dot 整理：保留浏览器本地估算和原创动画，移除原托管平台身份配置，增加独立静态部署配置及测试说明。
+
