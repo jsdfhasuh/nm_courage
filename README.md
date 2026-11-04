@@ -31,9 +31,32 @@ curl -I http://127.0.0.1:8080/
 - 先跑完整 Node.js 测试及上海、纽约时区测试，再用原有 Dockerfile 分别构建 **linux/amd64** 和 **linux/arm64**。普通 Intel/AMD 服务器选 amd64，Oracle Ampere A1 等 ARM 服务器选 arm64。
 - 每个架构使用原生 GitHub runner，构建时拉取 `nginx:1.28-alpine` 的当前基础镜像，并按架构缓存构建层。镜像含源码 commit、版本和构建时间标签。同一源码重新构建可能包含更新后的基础镜像。
 - 每个镜像都会实际启动，检查 Nginx 配置、首页、JavaScript MIME、静态资源、缺失文件 404 和容器健康检查。只有通过检查才上传镜像产物。
-- 不需要自建密钥，仅申请 `contents: read`；不登录或发布到 Docker Hub/GHCR，不自动更新服务器。外部 Actions 固定到完整 commit SHA。
+- 不需要自建密钥。构建、PR 和匿名验证 job 仅申请 `contents: read`；只有受信任 `main` 的独立发布 job 增加 `packages: write`，使用本次运行的临时 `GITHUB_TOKEN` 发布到 GHCR。外部 Actions 固定到完整 commit SHA，不自动更新服务器。
 
-**下载并运行已构建镜像**
+**从公开 GHCR 拉取镜像**
+
+仓库的定时、手动及受限 `main` push 运行，在两架构构建与容器测试都通过后，会把同一批已测试的镜像发布为：
+
+- `ghcr.io/jsdfhasuh/nm_courage:latest`：当前发布版本，Docker 根据主机自动选择 amd64 或 arm64。
+- `ghcr.io/jsdfhasuh/nm_courage:sha-<完整40位commit>`：追踪源码版本；同一源码的每日构建仍可能更新基础镜像。
+- `ghcr.io/jsdfhasuh/nm_courage:build-<run_id>-<run_attempt>`：追踪某次构建；需要精确固定镜像时，使用 Actions Summary 中的 `@sha256:…` digest。
+
+PR、非 `main` 手动运行和其他仓库的 fork 不会发布。发布 job 复用通过 checksum 和容器测试的镜像产物，不会测试后重新构建另一份镜像；同时防止旧 `main` 覆盖新版本的 `latest`。重试较早的同源码构建时，如果已有更新的构建发布，只补充该次构建标签，不回退 `latest` 或源码标签。
+
+**首次发布注意：GHCR 新 package 通常默认为 Private，不会因为源码仓库公开而自动公开。** 首次镜像推送成功后，由仓库所有者在 GitHub 个人主页的 **Packages → nm_courage → Package settings → Change visibility → Public** 完成公开设置，再在 Actions 中 **Re-run failed jobs**。此设置不需要新增 PAT 或其他长期凭据。工作流只有在无 registry 登录的干净 Docker 配置下，确认公开多架构 manifest，并分别实际匿名拉取、启动两架构镜像后，才会显示匿名验证成功；仅发布 job 成功不代表公开可拉取。
+
+公开验证成功后，任何人都能读取和下载这个镜像，无需 GitHub 登录：
+
+```sh
+docker pull ghcr.io/jsdfhasuh/nm_courage:latest
+docker run -d --name nm-courage --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 ghcr.io/jsdfhasuh/nm_courage:latest
+curl -I http://127.0.0.1:8080/
+```
+
+这不会自动部署或升级已有容器；已有同名容器时，应先自行安排停止和替换。服务仍默认只绑定本机端口。
+
+**离线下载并运行镜像产物**
 
 1. 打开一次成功的 Actions 运行，在 Summary 底部的 **Artifacts** 下载 `nm-courage-linux-amd64-…` 或 `nm-courage-linux-arm64-…`。下载需要登录有仓库读取权限的 GitHub 账号。
 2. 解压 ZIP，得到镜像 `.tar.gz`、`SHA256SUMS` 和 `image-info.txt`。产物保留 **7 天**，过期后可重新手动构建。PR 的产物用于验证；日常部署选 `main` 的定时或手动运行。
@@ -47,7 +70,7 @@ docker run -d --name nm-courage --restart unless-stopped \
 curl -I http://127.0.0.1:8080/
 ```
 
-镜像同时含 `nm-courage:sha-<前12位commit>-<架构>` 标签，完整 commit、镜像 ID 和本次运行地址见 `image-info.txt`。`latest-amd64` / `latest-arm64` 只是这次下载到本机的便捷标签，不是可直接 `docker pull` 的远程镜像；已有同名容器时应先自行安排停止和替换，`docker load` 不会更新正在运行的容器。
+离线镜像同时含 `nm-courage:sha-<前12位commit>-<架构>` 标签，完整 commit、镜像 ID 和本次运行地址见 `image-info.txt`。本地 `latest-amd64` / `latest-arm64` 只是下载产物的便捷标签；远程拉取应使用上面的完整 `ghcr.io/jsdfhasuh/nm_courage:latest` 地址。`docker load` 不会更新正在运行的容器。
 
 GitHub 定时任务可能延迟或在繁忙时被跳过，不保证准点。公开仓库长期（60 天）无活动时定时工作流可能被自动停用，可在 Actions 重新启用。修改时间时注意 cron 使用 UTC。
 

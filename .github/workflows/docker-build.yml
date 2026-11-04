@@ -27,7 +27,7 @@ on:
       - '*.test.mjs'
       - 'package.json'
 
-# Build downloadable images only. No registry login, package write or deployment.
+# Read-only by default. Only the trusted-main publish job can write packages.
 permissions:
   contents: read
 
@@ -37,6 +37,7 @@ concurrency:
 
 env:
   DOCKER_BUILD_RECORD_UPLOAD: 'false'
+  REGISTRY_IMAGE: ghcr.io/jsdfhasuh/nm_courage
 
 jobs:
   test:
@@ -104,6 +105,8 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            io.github.actions.run-id=${{ github.run_id }}
+            io.github.actions.run-attempt=${{ github.run_attempt }}
           cache-from: type=gha,scope=nm-courage-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=nm-courage-${{ matrix.arch }}
       - name: Smoke test image
@@ -150,5 +153,171 @@ jobs:
             echo "- Image: \`${IMAGE}\`"
             echo "- [Download image artifact](${ARTIFACT_URL}) (retained for 7 days)"
             echo '- The ZIP contains the Docker tar.gz, SHA256SUMS and image-info.txt.'
-            echo '- Verify the checksum, then use docker load. No image registry or server was updated.'
+            echo '- Verify the checksum, then use docker load. Trusted main runs publish to GHCR in a separate job; no server is deployed.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish tested images to GHCR
+    needs: build
+    if: >-
+      github.repository == 'jsdfhasuh/nm_courage' &&
+      github.ref == 'refs/heads/main' &&
+      contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event_name)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ghcr-nm-courage-publish
+      cancel-in-progress: false
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - name: Refuse to publish an outdated main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo '::error::main has advanced. Refusing to overwrite latest with an older build; run the current main workflow instead.'
+            exit 1
+          fi
+      - name: Inspect any existing package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          response="$RUNNER_TEMP/existing-package.json"
+          code=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            https://api.github.com/users/jsdfhasuh/packages/container/nm_courage)
+          case "$code" in
+            200)
+              repository=$(jq -r '.repository.full_name // empty' "$response")
+              if [[ -n "$repository" && "$repository" != "$GITHUB_REPOSITORY" ]]; then
+                echo '::error::The existing package belongs to another repository. Refusing to overwrite it.'
+                exit 1
+              fi
+              jq '{name, visibility, repository: .repository.full_name}' "$response"
+              ;;
+            404)
+              echo 'No existing package is accessible to this repository token. GHCR will enforce authorization when creating or pushing the target package.'
+              ;;
+            *)
+              echo "::error::Could not inspect existing package metadata (HTTP ${code}). No image was pushed."
+              exit 1
+              ;;
+          esac
+      - name: Download tested images from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: nm-courage-linux-*-${{ github.run_id }}-*
+          path: tested-images
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR with this job's temporary token
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tested images and multi-architecture tags
+        id: publish
+        run: |
+          sources=()
+          for arch in amd64 arm64; do
+            # Failed-job retries can reuse successful artifacts from earlier attempts.
+            dir=$(find tested-images -mindepth 1 -maxdepth 1 -type d \
+              -name "nm-courage-linux-${arch}-${GITHUB_RUN_ID}-*" | sort -V | tail -n 1)
+            test -n "$dir"
+            (cd "$dir" && sha256sum -c SHA256SUMS)
+            docker load -i "$dir/nm-courage-linux-${arch}.tar.gz"
+            local_image="nm-courage:sha-${GITHUB_SHA::12}-${arch}"
+            test "$(docker image inspect "$local_image" --format '{{.Os}}/{{.Architecture}}')" = "linux/${arch}"
+            test "$(docker image inspect "$local_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+            remote_image="${REGISTRY_IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${arch}"
+            docker tag "$local_image" "$remote_image"
+            docker push "$remote_image"
+            digest_ref=$(docker image inspect "$remote_image" --format '{{json .RepoDigests}}' \
+              | jq -er --arg prefix "${REGISTRY_IMAGE}@" '.[] | select(startswith($prefix))')
+            [[ "$digest_ref" =~ @sha256:[0-9a-f]{64}$ ]]
+            sources+=("$digest_ref")
+          done
+          # A retry of an older daily build must not roll back a newer base image
+          # even when both runs used the same source commit.
+          promote=true
+          if docker pull --platform linux/amd64 "${REGISTRY_IMAGE}:latest" > "$RUNNER_TEMP/current-latest.log" 2>&1; then
+            current_run=$(docker image inspect "${REGISTRY_IMAGE}:latest" --format '{{index .Config.Labels "io.github.actions.run-id"}}')
+            if [[ "$current_run" =~ ^[0-9]+$ ]] && (( current_run > GITHUB_RUN_ID )); then
+              promote=false
+              echo "A newer run (${current_run}) already owns latest. Publishing this build's specific tag only."
+            fi
+          elif ! grep -Eiq 'manifest unknown|manifest_unknown|no such manifest|name unknown' "$RUNNER_TEMP/current-latest.log"; then
+            cat "$RUNNER_TEMP/current-latest.log"
+            echo '::error::Could not check the current latest tag; refusing to overwrite it.'
+            exit 1
+          fi
+          tags=(--tag "${REGISTRY_IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          if [[ "$promote" == true ]]; then
+            tags+=(--tag "${REGISTRY_IMAGE}:latest" --tag "${REGISTRY_IMAGE}:sha-${GITHUB_SHA}")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${REGISTRY_IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            | tee "$RUNNER_TEMP/published-manifest.txt"
+          digest=$(sed -n 's/^Digest:[[:space:]]*//p' "$RUNNER_TEMP/published-manifest.txt")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo '### GHCR image published'
+            echo "- Image: \`${REGISTRY_IMAGE}:latest\`"
+            echo "- Source tag: \`${REGISTRY_IMAGE}:sha-${GITHUB_SHA}\`"
+            echo "- Exact image: \`${REGISTRY_IMAGE}@${digest}\`"
+            echo "- Updated latest and source tags: ${promote}"
+            echo '- Public availability is checked separately using anonymous pulls.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify-public:
+    name: Verify anonymous linux/${{ matrix.arch }} pull
+    needs: publish
+    if: needs.publish.outputs.digest != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      ARCH: ${{ matrix.arch }}
+      PUBLISHED_DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - name: Check out smoke test
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Verify public manifest and pull without registry credentials
+        run: |
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          if ! docker manifest inspect "${REGISTRY_IMAGE}:latest" > "$RUNNER_TEMP/public-manifest.json"; then
+            echo '::error::Anonymous GHCR access failed. If this is the first publication, set the nm_courage package visibility to Public in GitHub package settings, then rerun failed jobs. No personal access token is needed.'
+            exit 1
+          fi
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' \
+            "$RUNNER_TEMP/public-manifest.json"
+          docker manifest inspect "${REGISTRY_IMAGE}@${PUBLISHED_DIGEST}" > "$RUNNER_TEMP/published-manifest.json"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' \
+            "$RUNNER_TEMP/published-manifest.json"
+          docker pull --platform "linux/${ARCH}" "${REGISTRY_IMAGE}@${PUBLISHED_DIGEST}"
+          test "$(docker image inspect "${REGISTRY_IMAGE}@${PUBLISHED_DIGEST}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+          bash .github/scripts/smoke-test-image.sh "${REGISTRY_IMAGE}@${PUBLISHED_DIGEST}" "$ARCH"
+          {
+            echo "### Anonymous linux/${ARCH} pull passed"
+            echo "- Verified both architectures in the public latest manifest."
+            echo "- Pulled and ran \`${REGISTRY_IMAGE}@${PUBLISHED_DIGEST}\` without registry credentials."
           } >> "$GITHUB_STEP_SUMMARY"
