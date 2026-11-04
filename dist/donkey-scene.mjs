@@ -57,8 +57,8 @@ export function hoofGeometry(leg){
  const hoof=(x,y,z)=>add(leg.foot,add(mul(forward,x*Math.cos(roll)-y*Math.sin(roll)),{x:Math.sin(yaw)*z,y:x*Math.sin(roll)+y*Math.cos(roll),z:Math.cos(yaw)*z}));
  return {bottom:[hoof(-3,0,-2.5),hoof(4.8,0,-2.5),hoof(4.8,0,2.5),hoof(-3,0,2.5)],top:[hoof(-2.1,4.6,-2),hoof(3.5,4.3,-2),hoof(3.5,4.3,2),hoof(-2.1,4.6,2)]};
 }
-export function renderScene(ctx,width,height,t,walking=true){
- const pose=poseAt(t,walking),b=pose.body,s=Math.min(1.08,Math.max(.78,width/620)),cx=width*.49,base=height-27;
+export function renderScene(ctx,width,height,t,walking=true,options={}){
+ const pose=options.pose||poseAt(t,walking),b=pose.body,s=Math.min(1.08,Math.max(.78,width/620)),cx=width*.49,base=height-27;
  const project=p=>({x:cx+p.x*s,y:base+(.2*p.z-p.y)*s});
  const point=(x,y,z=0)=>local({x:x+(y>104&&x>28?b.reach:0),y,z},b);
  const P=(x,y,z=0)=>project(point(x,y,z));
@@ -141,6 +141,8 @@ export function renderScene(ctx,width,height,t,walking=true){
   if(side*Math.cos(b.yaw)>0)addPart(nostril.z+.7,()=>curve([point(59,88.7+headNod,side*10.8),point(63,88.2+headNod,side*9.2),point(66,90+headNod,side*7)],'#81836b',.8));
   if(side*Math.cos(b.yaw)>-.25)addPart(nostril.z+.6,()=>ellipse(nostril,1.2,.9,.8,'#73806d'));
  }
+ // Pointer mode frees the carrot from its carrier, without adding a second carrot.
+ if(!options.pointer){
  // Bridle and carrier are one connected object, with a pendulum at the free end.
  const visibleSide=Math.cos(b.yaw)>0?1:-1,strap=[point(39,122+headNod,visibleSide*10),point(47,106+headNod,visibleSide*11.7),point(57,97+headNod,visibleSide*10.9)];
  addPart(strap.reduce((a,p)=>a+p.z,0)/3+.8,()=>curve(strap,'#c6c7ad',1.6));
@@ -152,16 +154,18 @@ export function renderScene(ctx,width,height,t,walking=true){
   ctx.beginPath();ctx.moveTo(c.x-2*s,c.y+4*s);ctx.quadraticCurveTo(c.x-2*s,c.y+9*s,bottom.x,bottom.y-4*s);ctx.strokeStyle='#e1a56a';ctx.lineWidth=1.5*s;ctx.stroke();
   for(const sign of [-1,0,1]){ctx.beginPath();ctx.moveTo(c.x,c.y+2*s);ctx.quadraticCurveTo(c.x+sign*5*s,c.y-4*s,c.x+sign*4*s,c.y-(sign===0?10:6)*s);ctx.strokeStyle=sign===0?'#567b4e':'#78915b';ctx.lineWidth=2.2*s;ctx.lineCap='round';ctx.stroke();}
  });
+ }
  parts.sort((a,b)=>a.depth-b.depth).forEach(p=>p.draw());
+ if(options.pointer)drawPointerCarrot(ctx,options.pointer.x,options.pointer.y,width);
  return pose;
 }
-export function mountDonkeyScene(canvas){
- const ctx=canvas.getContext('2d');let width=0,height=0,dpr=1,time=0,last=null,frame=0,previousPlaying=null,previousWorking=null;
- function resize(){const rect=canvas.getBoundingClientRect();width=rect.width;height=rect.height;dpr=Math.min(2,globalThis.devicePixelRatio||1);canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);renderScene(ctx,width,height,time,!document.body.classList.contains('resting'));}
- const ro=new ResizeObserver(resize);ro.observe(canvas);resize();
- function tick(now){const playing=!document.body.classList.contains('paused'),working=!document.body.classList.contains('resting');if(last===null)last=now;const dt=Math.min((now-last)/1000,.05);last=now;if(!document.hidden&&playing)time+=dt;
-  if(!document.hidden&&(playing||playing!==previousPlaying||working!==previousWorking)){renderScene(ctx,width,height,time,working);canvas.dataset.animationTime=time.toFixed(4);canvas.dataset.animationState=playing?(working?'walking':'idle'):'paused';}
-  previousPlaying=playing;previousWorking=working;frame=requestAnimationFrame(tick);
- }
- frame=requestAnimationFrame(tick);return()=>{cancelAnimationFrame(frame);ro.disconnect();};
+// The carrot tip is the pointer hotspot. It never receives input events.
+export function drawPointerCarrot(ctx,x,y,width=640){
+ const angle=y<44?(x<20?Math.PI-.5:x>width-20?Math.PI+.5:Math.PI):(x<20?.5:x>width-20?-.5:-.28);
+ ctx.save();ctx.translate(x,y);ctx.rotate(angle);
+ ctx.shadowColor='#66714820';ctx.shadowBlur=4;ctx.shadowOffsetY=2;
+ ctx.beginPath();ctx.moveTo(-5,-25);ctx.quadraticCurveTo(-7,-14,0,0);ctx.quadraticCurveTo(7,-14,5,-25);ctx.quadraticCurveTo(0,-28,-5,-25);ctx.fillStyle='#db8b45';ctx.fill();ctx.shadowColor='transparent';
+ ctx.beginPath();ctx.moveTo(-2.5,-23);ctx.quadraticCurveTo(-3,-13,0,-5);ctx.strokeStyle='#f6bc75';ctx.lineWidth=1.7;ctx.lineCap='round';ctx.stroke();
+ for(const [a,b] of [[-6,-34],[1,-39],[7,-33]]){ctx.beginPath();ctx.moveTo(0,-24);ctx.quadraticCurveTo(a*.5,-30,a,b);ctx.strokeStyle=a<0?'#8ba35e':'#527a42';ctx.lineWidth=2.5;ctx.stroke();}
+ ctx.restore();
 }

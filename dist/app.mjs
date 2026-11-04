@@ -1,5 +1,5 @@
 import { DEFAULTS, validateSettings, calculate } from './time.mjs';
-import {mountDonkeyScene} from './donkey-scene.mjs';
+import {mountDonkeyScene} from './scene-player.mjs';
 import {normalizeMotionChoice,motionState,toggleMotion} from './motion.mjs';
 const $ = id => document.getElementById(id);
 const STORE = 'carrot-workday-settings-v1';
