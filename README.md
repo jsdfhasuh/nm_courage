@@ -22,6 +22,35 @@ curl -I http://127.0.0.1:8080/
 
 后续自行部署到 Oracle 云时，只需普通 Linux 主机及 Docker，或已有 Nginx。域名、HTTPS、访问控制、OCI 安全列表及主机防火墙由部署者按需配置，本项目不会修改它们。新自部署站点不会继承原托管站点的私有访问控制，需要私有访问时应自行加认证。
 
+### GitHub Actions 定时构建镜像
+
+工作流：[`Build Docker images`](https://github.com/jsdfhasuh/nm_courage/actions/workflows/docker-build.yml)。配置文件为 `.github/workflows/docker-build.yml`，由 dot 编写和推送。
+
+- 每天北京时间 **04:00** 运行，对应 UTC 的 `0 20 * * *`。定时任务只在默认分支上运行，工作流必须位于 `main` 才会生效。
+- 也可在仓库 **Actions → Build Docker images → Run workflow** 手动构建。Dockerfile、部署配置或工作流变更推到 `main` 时会立即构建验证；相关 Docker、网页、测试或工作流文件的 PR 也会执行验证，普通无关提交不会触发。
+- 先跑完整 Node.js 测试及上海、纽约时区测试，再用原有 Dockerfile 分别构建 **linux/amd64** 和 **linux/arm64**。普通 Intel/AMD 服务器选 amd64，Oracle Ampere A1 等 ARM 服务器选 arm64。
+- 每个架构使用原生 GitHub runner，构建时拉取 `nginx:1.28-alpine` 的当前基础镜像，并按架构缓存构建层。镜像含源码 commit、版本和构建时间标签。同一源码重新构建可能包含更新后的基础镜像。
+- 每个镜像都会实际启动，检查 Nginx 配置、首页、JavaScript MIME、静态资源、缺失文件 404 和容器健康检查。只有通过检查才上传镜像产物。
+- 不需要自建密钥，仅申请 `contents: read`；不登录或发布到 Docker Hub/GHCR，不自动更新服务器。外部 Actions 固定到完整 commit SHA。
+
+**下载并运行已构建镜像**
+
+1. 打开一次成功的 Actions 运行，在 Summary 底部的 **Artifacts** 下载 `nm-courage-linux-amd64-…` 或 `nm-courage-linux-arm64-…`。下载需要登录有仓库读取权限的 GitHub 账号。
+2. 解压 ZIP，得到镜像 `.tar.gz`、`SHA256SUMS` 和 `image-info.txt`。产物保留 **7 天**，过期后可重新手动构建。PR 的产物用于验证；日常部署选 `main` 的定时或手动运行。
+3. 在解压后的目录校验并加载。以下为 amd64 示例，ARM 主机将两处 `amd64` 改为 `arm64`：
+
+```sh
+sha256sum -c SHA256SUMS
+docker load -i nm-courage-linux-amd64.tar.gz
+docker run -d --name nm-courage --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 nm-courage:latest-amd64
+curl -I http://127.0.0.1:8080/
+```
+
+镜像同时含 `nm-courage:sha-<前12位commit>-<架构>` 标签，完整 commit、镜像 ID 和本次运行地址见 `image-info.txt`。`latest-amd64` / `latest-arm64` 只是这次下载到本机的便捷标签，不是可直接 `docker pull` 的远程镜像；已有同名容器时应先自行安排停止和替换，`docker load` 不会更新正在运行的容器。
+
+GitHub 定时任务可能延迟或在繁忙时被跳过，不保证准点。公开仓库长期（60 天）无活动时定时工作流可能被自动停用，可在 Actions 重新启用。修改时间时注意 cron 使用 UTC。
+
 ## 普通 Nginx
 
 将 `dist/` 内容放到站点目录，使用或参考 `deploy/nginx.conf`，调整其中的 `root`、监听端口和域名。重载前先运行 `nginx -t`。配置已显式声明 `.mjs` 的 JavaScript MIME 类型，避免模块被当作下载文件。
@@ -61,12 +90,14 @@ TZ=Asia/Shanghai node --test time.test.mjs
 TZ=America/New_York node --test time.test.mjs
 ```
 
-30项测试覆盖跨午夜和跨月班次、休息时间、无效输入、动画偏好、鼠标交互条件、巡回/追逐连续性、急反向、多帧率、固定腿长与完整蹄底接地锁定。源码已做真实浏览器整轮连续动画与窄屏检查。Docker/Nginx 配置尚未在此环境启动验证，部署者应先运行上述启动和 `nginx -t` 检查。
+30项测试覆盖跨午夜和跨月班次、休息时间、无效输入、动画偏好、鼠标交互条件、巡回/追逐连续性、急反向、多帧率、固定腿长与完整蹄底接地锁定。源码已做真实浏览器整轮连续动画与窄屏检查。Docker 工作流会对每个架构执行 `.github/scripts/smoke-test-image.sh`，以对应 Actions 运行结果为准；部署时仍应检查实际主机的端口、反向代理及 HTTPS 配置。
 
 ## 文件
 
 - `dist/`：可直接发布的完整网页源码。
 - `*.test.mjs`：无外部依赖的测试。
 - `deploy/nginx.conf`、`Dockerfile`、`compose.yaml`：可选部署配置。
+- `.github/workflows/docker-build.yml`：定时、手动及 PR 镜像构建。
+- `.github/scripts/smoke-test-image.sh`：容器 HTTP 与健康检查。
 
 自部署版本由 dot 整理：保留浏览器本地估算和原创动画，移除原托管平台身份配置，增加独立静态部署配置及测试说明。

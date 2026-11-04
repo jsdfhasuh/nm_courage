@@ -1,0 +1,154 @@
+name: Build Docker images
+
+on:
+  schedule:
+    # GitHub cron uses UTC: 20:00 UTC = 04:00 the next day in Asia/Shanghai.
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/docker-build.yml'
+      - '.github/scripts/smoke-test-image.sh'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'deploy/**'
+      - 'compose.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/docker-build.yml'
+      - '.github/scripts/smoke-test-image.sh'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'deploy/**'
+      - 'compose.yaml'
+      - 'dist/**'
+      - '*.test.mjs'
+      - 'package.json'
+
+# Build downloadable images only. No registry login, package write or deployment.
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+jobs:
+  test:
+    name: Test application
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Run tests and timezone checks
+        run: |
+          npm test
+          TZ=Asia/Shanghai node --test time.test.mjs
+          TZ=America/New_York node --test time.test.mjs
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare image metadata
+        id: meta
+        run: |
+          echo "tag=nm-courage:sha-${GITHUB_SHA::12}-${ARCH}" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and load image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          pull: true
+          push: false
+          load: true
+          tags: |
+            ${{ steps.meta.outputs.tag }}
+            nm-courage:latest-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.title=牛马鼓励器
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+          cache-from: type=gha,scope=nm-courage-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=nm-courage-${{ matrix.arch }}
+      - name: Smoke test image
+        env:
+          IMAGE: ${{ steps.meta.outputs.tag }}
+        run: bash .github/scripts/smoke-test-image.sh "$IMAGE" "$ARCH"
+      - name: Export tested image and checksum
+        env:
+          IMAGE: ${{ steps.meta.outputs.tag }}
+        run: |
+          mkdir -p artifacts
+          docker save "$IMAGE" "nm-courage:latest-${ARCH}" | gzip -n > "artifacts/nm-courage-linux-${ARCH}.tar.gz"
+          (
+            cd artifacts
+            sha256sum "nm-courage-linux-${ARCH}.tar.gz" > SHA256SUMS
+          )
+          {
+            echo "Image: ${IMAGE}"
+            echo "Convenience tag: nm-courage:latest-${ARCH}"
+            echo "Platform: linux/${ARCH}"
+            echo "Source commit: ${GITHUB_SHA}"
+            echo "Run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            docker image inspect "$IMAGE" --format 'Image ID: {{.Id}}'
+            echo 'Load: docker load -i nm-courage-linux-'"${ARCH}"'.tar.gz'
+            echo 'Run: docker run -d --name nm-courage --restart unless-stopped -p 127.0.0.1:8080:8080 '"${IMAGE}"
+          } > artifacts/image-info.txt
+      - name: Upload image artifact
+        id: artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nm-courage-linux-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Summarize download
+        env:
+          IMAGE: ${{ steps.meta.outputs.tag }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          {
+            echo "### linux/${ARCH} image ready"
+            echo
+            echo "- Image: \`${IMAGE}\`"
+            echo "- [Download image artifact](${ARTIFACT_URL}) (retained for 7 days)"
+            echo '- The ZIP contains the Docker tar.gz, SHA256SUMS and image-info.txt.'
+            echo '- Verify the checksum, then use docker load. No image registry or server was updated.'
+          } >> "$GITHUB_STEP_SUMMARY"
